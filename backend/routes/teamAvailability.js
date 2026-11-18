@@ -77,7 +77,7 @@ router.post(
 router.get(
     '/',
     verifyToken,
-    authorizeRole('ADMIN', 'ORGANIZER', 'TEAM_CAPTAIN_PLAYER'),
+    authorizeRole('ADMIN', 'ORGANIZER', 'TEAM_CAPTAIN_PLAYER', 'PLAYER'),
     (req, res) => {
         const { team_id } = req.query;
 
@@ -96,6 +96,12 @@ router.get(
             params.push(req.user.id);
         } else if (req.user.role === 'TEAM_CAPTAIN_PLAYER') {
             sql += ' AND teams.captain_id = ?';
+            params.push(req.user.id);
+        } else if (req.user.role === 'PLAYER') {
+            sql += ` AND EXISTS (
+                SELECT 1 FROM player_team_memberships membership
+                WHERE membership.team_id = teams.id AND membership.user_id = ?
+            )`;
             params.push(req.user.id);
         }
 
