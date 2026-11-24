@@ -1406,6 +1406,296 @@ def show_plan_page():
         st.markdown('<div class="section-title">⏳ Scheduling Progress</div>', unsafe_allow_html=True)
         st.progress(progress_pct, text=f"{scheduled_count}/{total} matches scheduled ({progress_pct*100:.0f}%)")
 
+
+# ─────────────────────────────────────────────
+# PAGE — MATCH RESULT MANAGEMENT (SPRINT 4)
+# ─────────────────────────────────────────────
+def show_match_results_page():
+    st.title("🏁 Match Result Management")
+    st.markdown("*Sprint 4 — Tasks 10.1 and 10.2: Enter and update match results*")
+    if not is_organizer():
+        st.warning("Only Organizers and Admins can manage match results.")
+        return
+
+    tournaments = fetch_tournaments()
+    if not tournaments:
+        st.info("No tournaments found. Create a tournament first.")
+        return
+    tournament_labels = {
+        f"{t['name']} ({t.get('sport', '?')} · {t.get('format', '?')})": t
+        for t in tournaments
+    }
+    selected_label = st.selectbox("🏆 Select Tournament", list(tournament_labels.keys()), key="match_result_tournament")
+    tournament = tournament_labels[selected_label]
+    tournament_id = int(tournament["id"])
+    fixtures = fetch_fixtures(tournament_id)
+    results_data, results_code = api_get("/match-results", params={"tournament_id": tournament_id})
+    if results_code != 200:
+        show_api_error(results_data, results_code)
+        return
+    results = results_data.get("results", [])
+
+    if tournament.get("format") == "KNOCKOUT":
+        if st.button("🏆 Advance completed knockout round", key=f"advance_bracket_{tournament_id}"):
+            advance_data, advance_code = api_post("/match-results/advance", {"tournament_id": tournament_id})
+            if advance_code == 200:
+                bracket_data = advance_data.get("bracket") or {}
+                created_ids = bracket_data.get("created_fixture_ids", [])
+                if created_ids:
+                    st.success(f"Created {len(created_ids)} next-round fixture(s): {', '.join(str(x) for x in created_ids)}")
+                else:
+                    st.info(advance_data.get("message", "No completed round is ready to advance."))
+                st.rerun()
+            else:
+                show_api_error(advance_data, advance_code)
+
+    if results:
+        st.markdown("### ✅ Previously recorded results")
+        result_rows = []
+        for result in results:
+            outcome_label = {
+                "TEAM1_WIN": (result.get("team1_name") or "Team 1") + " won",
+                "TEAM2_WIN": (result.get("team2_name") or "Team 2") + " won",
+                "DRAW": "Draw",
+            }.get(result.get("outcome"), result.get("outcome", "—"))
+            result_rows.append({
+                "Fixture": result.get("fixture_id"), "Round": result.get("round", "—"),
+                "Team 1": result.get("team1_name", "—"),
+                "Score": f"{result.get('team1_score')} - {result.get('team2_score')}",
+                "Team 2": result.get("team2_name", "—"), "Outcome": outcome_label,
+                "Recorded by": result.get("recorded_by_name") or "—",
+            })
+        st.dataframe(pd.DataFrame(result_rows), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("### ✏️ Update an existing match result")
+        update_labels = {
+            f"Round {r.get('round', '?')} · {r.get('team1_name', 'Team 1')} vs {r.get('team2_name', 'Team 2')} · Fixture #{r['fixture_id']}": r
+            for r in results
+        }
+        selected_update_label = st.selectbox("Select a saved result to correct", list(update_labels.keys()), key=f"update_result_select_{tournament_id}")
+        selected_result = update_labels[selected_update_label]
+        uc1, uc2 = st.columns(2)
+        with uc1:
+            updated_team1_score = st.number_input(
+                f"{selected_result.get('team1_name', 'Team 1')} corrected score",
+                min_value=0.0, value=float(selected_result.get("team1_score", 0)), step=1.0,
+                format="%.2f", key=f"update_team1_score_{selected_result['fixture_id']}"
+            )
+        with uc2:
+            updated_team2_score = st.number_input(
+                f"{selected_result.get('team2_name', 'Team 2')} corrected score",
+                min_value=0.0, value=float(selected_result.get("team2_score", 0)), step=1.0,
+                format="%.2f", key=f"update_team2_score_{selected_result['fixture_id']}"
+            )
+        if tournament.get("format") == "KNOCKOUT":
+            st.caption("Knockout results must have a winner. If a later-round match has already been played, correct that later round first.")
+        if st.button("✏️ Update Match Result", type="primary", key=f"update_match_result_{selected_result['fixture_id']}"):
+            response, code = api_put(
+                f"/match-results/{int(selected_result['fixture_id'])}",
+                {"team1_score": float(updated_team1_score), "team2_score": float(updated_team2_score)}
+            )
+            if code == 200:
+                st.success(response.get("message", "Match result updated successfully."))
+                st.rerun()
+            else:
+                show_api_error(response, code)
+    else:
+        st.info("No results have been recorded for this tournament yet.")
+
+    recorded_fixture_ids = {int(result["fixture_id"]) for result in results}
+    eligible_fixtures = [
+        fixture for fixture in fixtures
+        if fixture.get("status") == "SCHEDULED" and fixture.get("team2_id") is not None
+        and not fixture.get("is_bye") and int(fixture["id"]) not in recorded_fixture_ids
+    ]
+    st.markdown("---")
+    st.markdown("### 📝 Enter a completed match result")
+    if not eligible_fixtures:
+        st.info("There are no scheduled matches waiting for a result. Generate and schedule fixtures first.")
+        return
+
+    fixture_labels = {}
+    for fixture in eligible_fixtures:
+        team1 = fixture.get("team1_name") or f"Team #{fixture.get('team1_id')}"
+        team2 = fixture.get("team2_name") or f"Team #{fixture.get('team2_id')}"
+        label = f"Round {fixture.get('round', '?')} · {team1} vs {team2} · {fixture.get('match_date') or 'Date not set'} {fixture.get('match_start_time') or ''} · Fixture #{fixture['id']}"
+        fixture_labels[label] = fixture
+    selected_fixture_label = st.selectbox("Select scheduled match", list(fixture_labels.keys()), key=f"result_fixture_{tournament_id}")
+    selected_fixture = fixture_labels[selected_fixture_label]
+    team1_name = selected_fixture.get("team1_name") or "Team 1"
+    team2_name = selected_fixture.get("team2_name") or "Team 2"
+    score_col1, score_col2 = st.columns(2)
+    with score_col1:
+        team1_score = st.number_input(f"{team1_name} score", min_value=0.0, value=0.0, step=1.0, format="%.2f", key=f"team1_score_{selected_fixture['id']}")
+    with score_col2:
+        team2_score = st.number_input(f"{team2_name} score", min_value=0.0, value=0.0, step=1.0, format="%.2f", key=f"team2_score_{selected_fixture['id']}")
+    if tournament.get("format") == "KNOCKOUT":
+        st.caption("Knockout matches cannot finish as a draw. Enter the final score after any tie-break.")
+    else:
+        st.caption("For League and Group Stage tournaments, equal scores are saved as a draw.")
+    if st.button("💾 Save Match Result", type="primary", key=f"save_match_result_{selected_fixture['id']}"):
+        payload = {"fixture_id": int(selected_fixture["id"]), "team1_score": float(team1_score), "team2_score": float(team2_score)}
+        with st.spinner("Saving match result..."):
+            response, status_code = api_post("/match-results", payload)
+        if status_code == 201:
+            st.success(response.get("message", "Match result saved successfully."))
+            bracket = response.get("bracket") or {}
+            if bracket.get("created_fixture_ids"):
+                st.success(f"Knockout progression created {len(bracket['created_fixture_ids'])} fixture(s) for round {bracket.get('next_round')}.")
+            st.rerun()
+        else:
+            show_api_error(response, status_code)
+
+
+def show_standings_page():
+    st.title("📈 Tournament Standings")
+    st.markdown("*Sprint 4 — Task 11.1: Automatically calculate standings from completed match results*")
+    tournaments = fetch_tournaments()
+    if not tournaments:
+        st.info("No tournaments found.")
+        return
+    labels = {f"{t['name']} ({t.get('format', '?')})": t for t in tournaments}
+    selected = st.selectbox("Select tournament", list(labels.keys()), key="standings_tournament")
+    tournament = labels[selected]
+    data, code = api_get("/match-results/standings", params={"tournament_id": tournament["id"]})
+    if code == 400 and tournament.get("format") == "KNOCKOUT":
+        st.info("Knockout tournaments use the bracket view. League standings are for League and Group Stage tournaments.")
+        return
+    if code != 200:
+        show_api_error(data, code)
+        return
+    st.metric("Completed matches counted", data.get("matches_counted", 0))
+    groups = data.get("groups") or {"Overall": data.get("standings", [])}
+    for group_name, rows in groups.items():
+        st.markdown(f"### {group_name if group_name != 'Overall' else 'Overall standings'}")
+        table = []
+        for rank, row in enumerate(rows, start=1):
+            table.append({
+                "Position": rank, "Team": row.get("team_name"), "Played": row.get("played"),
+                "Won": row.get("won"), "Drawn": row.get("drawn"), "Lost": row.get("lost"),
+                "GF": row.get("goals_for"), "GA": row.get("goals_against"),
+                "GD": row.get("goal_difference"), "Points": row.get("points")
+            })
+        st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+
+
+def show_alternative_schedule_page():
+    st.title("🔄 Alternative Match Scheduling")
+    st.markdown("*Sprint 4 — Task 13.1: Find and apply an alternative date, time and venue for a pending fixture*")
+    if not is_organizer():
+        st.warning("Only Organizers and Admins can change schedules.")
+        return
+    tournaments = fetch_tournaments()
+    if not tournaments:
+        st.info("No tournaments found.")
+        return
+    labels = {f"{t['name']} ({t.get('format', '?')})": t for t in tournaments}
+    selected = st.selectbox("Select tournament", list(labels.keys()), key="alternative_tournament")
+    tournament = labels[selected]
+    fixtures = fetch_fixtures(tournament["id"])
+    pending = [f for f in fixtures if f.get("status") not in ("COMPLETED", "CANCELLED") and f.get("team2_id") and not f.get("is_bye")]
+    if not pending:
+        st.info("No pending fixtures are available for rescheduling.")
+        return
+    fixture_labels = {
+        f"Round {f.get('round', '?')} · {f.get('team1_name', 'Team 1')} vs {f.get('team2_name', 'Team 2')} · Fixture #{f['id']}": f
+        for f in pending
+    }
+    selected_fixture_label = st.selectbox("Select fixture", list(fixture_labels.keys()), key=f"alternative_fixture_{tournament['id']}")
+    fixture = fixture_labels[selected_fixture_label]
+    if st.button("🔎 Find Alternative Slots", type="primary", key=f"find_alternatives_{fixture['id']}"):
+        response, code = api_post("/alternative-schedule/options", {"fixture_id": int(fixture["id"])})
+        if code == 200:
+            st.session_state[f"alternative_slots_{fixture['id']}"] = response.get("alternatives", [])
+        else:
+            show_api_error(response, code)
+    options = st.session_state.get(f"alternative_slots_{fixture['id']}", [])
+    if options:
+        option_labels = {
+            f"{o['match_date']} · {o['match_start_time']}–{o['match_end_time']} · {o['venue_name']}": o
+            for o in options
+        }
+        choice_label = st.selectbox("Choose an alternative", list(option_labels.keys()), key=f"alternative_choice_{fixture['id']}")
+        choice = option_labels[choice_label]
+        if st.button("✅ Apply Alternative Schedule", key=f"apply_alternative_{fixture['id']}"):
+            response, code = api_post("/alternative-schedule/apply", {
+                "fixture_id": int(fixture["id"]), "venue_id": int(choice["venue_id"]),
+                "match_date": choice["match_date"], "match_start_time": choice["match_start_time"]
+            })
+            if code == 200:
+                st.success(response.get("message", "Alternative schedule applied."))
+                st.session_state.pop(f"alternative_slots_{fixture['id']}", None)
+                st.rerun()
+            else:
+                show_api_error(response, code)
+    elif f"alternative_slots_{fixture['id']}" in st.session_state:
+        st.warning("No conflict-free alternative slots were found. Check tournament dates, venue availability and team rest times.")
+
+
+def show_user_management_page():
+    st.title("👤 User Account Management")
+    st.markdown("*Sprint 4 — Task 14.1: Review accounts and manage account roles*")
+    if role() != "ADMIN":
+        st.warning("Only Admin accounts can manage user accounts.")
+        return
+    data, code = api_get("/users/admin/list")
+    if code != 200:
+        show_api_error(data, code)
+        return
+    users = data.get("users", [])
+    st.metric("Registered accounts", len(users))
+    if not users:
+        st.info("No user accounts found.")
+        return
+    st.dataframe(pd.DataFrame([{k: u.get(k) for k in ("id", "name", "email", "role", "created_at")} for u in users]), use_container_width=True, hide_index=True)
+    user_labels = {f"#{u['id']} · {u['name']} · {u['email']} ({u['role']})": u for u in users}
+    label = st.selectbox("Select account to update", list(user_labels.keys()), key="admin_user_select")
+    selected_user = user_labels[label]
+    roles = ["ADMIN", "ORGANIZER", "VENUE_COORDINATOR", "TEAM_CAPTAIN_PLAYER", "PLAYER"]
+    current = selected_user.get("role", "PLAYER")
+    selected_role = st.selectbox("New role", roles, index=roles.index(current) if current in roles else 0, key=f"admin_role_{selected_user['id']}")
+    if st.button("Save Role", type="primary", key=f"save_role_{selected_user['id']}"):
+        response, status = api_put(f"/users/admin/{int(selected_user['id'])}/role", {"role": selected_role})
+        if status == 200:
+            st.success(response.get("message", "Account role updated."))
+            st.rerun()
+        else:
+            show_api_error(response, status)
+
+
+def show_monitoring_page():
+    st.title("🖥️ System Monitoring")
+    st.markdown("*Sprint 4 — Task 14.2: Application, database and usage overview*")
+    if role() != "ADMIN":
+        st.warning("Only Admin accounts can view system monitoring.")
+        return
+    data, code = api_get("/admin/monitoring")
+    if code != 200:
+        show_api_error(data, code)
+        return
+    status_cols = st.columns(4)
+    status_cols[0].metric("Application", data.get("status", "—"))
+    status_cols[1].metric("Database", data.get("database", "—"))
+    status_cols[2].metric("API response", f"{data.get('response_time_ms', 0)} ms")
+    status_cols[3].metric("Uptime", f"{round(data.get('uptime_seconds', 0) / 60, 1)} min")
+    counts = data.get("counts", {})
+    st.markdown("### Platform totals")
+    count_cols = st.columns(4)
+    for col, key, label in zip(count_cols, ["users", "tournaments", "teams", "venues"], ["Users", "Tournaments", "Teams", "Venues"]):
+        col.metric(label, counts.get(key, 0))
+    second_cols = st.columns(3)
+    second_cols[0].metric("Fixtures", counts.get("fixtures", 0))
+    second_cols[1].metric("Completed fixtures", counts.get("completed_fixtures", 0))
+    second_cols[2].metric("Saved results", counts.get("match_results", 0))
+    memory = data.get("memory", {})
+    st.markdown("### Server resources")
+    st.write(f"Node.js: {data.get('server', {}).get('node_version', '—')} · Platform: {data.get('server', {}).get('platform', '—')}")
+    st.write(f"Memory in use: {round(memory.get('rss_bytes', 0) / (1024 * 1024), 1)} MB")
+    st.caption(f"Last checked: {data.get('checked_at', '—')}")
+    if st.button("🔄 Refresh monitoring data"):
+        st.rerun()
+
 # ─────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────
@@ -1442,6 +1732,11 @@ def build_sidebar():
                 nav_options += ["🏟️ Venue Management"]
             if user_role in ("ORGANIZER", "ADMIN"):
                 nav_options += ["⚡ Fixtures & Scheduling"]
+                nav_options += ["🏁 Match Results"]
+                nav_options += ["📈 Standings"]
+                nav_options += ["🔄 Alternative Scheduling"]
+            if user_role == "ADMIN":
+                nav_options += ["👤 User Management", "🖥️ System Monitoring"]
             if user_role != "PLAYER":
                 nav_options += ["📋 Tournament Plan"]
 
@@ -1504,6 +1799,16 @@ def main():
         show_venues_page()
     elif page == "⚡ Fixtures & Scheduling":
         show_fixtures_page()
+    elif page == "🏁 Match Results":
+        show_match_results_page()
+    elif page == "📈 Standings":
+        show_standings_page()
+    elif page == "🔄 Alternative Scheduling":
+        show_alternative_schedule_page()
+    elif page == "👤 User Management":
+        show_user_management_page()
+    elif page == "🖥️ System Monitoring":
+        show_monitoring_page()
     elif page == "📋 Tournament Plan":
         show_plan_page()
     elif page == "Venue Selection":

@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const db = require('../config/db');
-const { verifyToken } = require('../middleware/auth');
+const { verifyToken, authorizeRole } = require('../middleware/auth');
 const router = express.Router();
 
 // User Registration API
@@ -85,6 +85,47 @@ router.post('/register', async (req, res) => {
         return res.status(500).json({ message: 'Server error during registration' });
     } finally {
         if (connection) connection.release();
+    }
+});
+
+// Admin user management: list accounts and update roles. Password hashes are never returned.
+router.get('/admin/list', verifyToken, authorizeRole('ADMIN'), async (req, res) => {
+    try {
+        const [users] = await db.promise().query(
+            `SELECT id, name, email, role, created_at
+             FROM users ORDER BY created_at DESC, id DESC`
+        );
+        return res.json({ users, total: users.length });
+    } catch (error) {
+        console.error('Admin user list error:', error.message);
+        return res.status(500).json({ message: 'Failed to load user accounts' });
+    }
+});
+
+router.put('/admin/:id/role', verifyToken, authorizeRole('ADMIN'), async (req, res) => {
+    const targetId = Number(req.params.id);
+    const newRole = String(req.body.role || '').toUpperCase();
+    const allowedRoles = ['ADMIN', 'ORGANIZER', 'VENUE_COORDINATOR', 'TEAM_CAPTAIN_PLAYER', 'PLAYER'];
+    if (!Number.isInteger(targetId) || targetId <= 0 || !allowedRoles.includes(newRole)) {
+        return res.status(400).json({ message: 'A valid user ID and role are required' });
+    }
+    if (targetId === Number(req.user.id) && newRole !== 'ADMIN') {
+        return res.status(409).json({ message: 'You cannot remove your own ADMIN role' });
+    }
+    try {
+        const [targetRows] = await db.promise().query('SELECT id, role FROM users WHERE id = ?', [targetId]);
+        if (!targetRows.length) return res.status(404).json({ message: 'User account not found' });
+        if (targetRows[0].role === 'ADMIN' && newRole !== 'ADMIN') {
+            const [adminRows] = await db.promise().query("SELECT COUNT(*) AS total FROM users WHERE role = 'ADMIN'");
+            if (Number(adminRows[0].total) <= 1) {
+                return res.status(409).json({ message: 'The last ADMIN account cannot be demoted' });
+            }
+        }
+        await db.promise().query('UPDATE users SET role = ? WHERE id = ?', [newRole, targetId]);
+        return res.json({ message: 'User role updated successfully', user_id: targetId, role: newRole });
+    } catch (error) {
+        console.error('Admin role update error:', error.message);
+        return res.status(500).json({ message: 'Failed to update user role' });
     }
 });
 

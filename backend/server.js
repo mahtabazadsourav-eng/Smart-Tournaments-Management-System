@@ -23,6 +23,9 @@ app.use('/api/players', require('./routes/players'));
 app.use('/api/venues', require('./routes/venues'));
 app.use('/api/venue-availability', require('./routes/venueAvailability'));
 app.use('/api/fixtures', require('./routes/fixtures'));
+app.use('/api/match-results', require('./routes/matchResults'));
+app.use('/api/alternative-schedule', require('./routes/alternativeSchedule'));
+app.use('/api/admin', require('./routes/admin'));
 // Protected Captain Dashboard
 app.get(
     '/api/captain/dashboard',
