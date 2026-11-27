@@ -1,5 +1,5 @@
 -- Smart Tournament Planner - Full Database Schema
--- Covers Sprint 1, 2, and 3
+-- Covers Sprint 1, 2, 3, and 4
 
 CREATE DATABASE IF NOT EXISTS smart_tournament;
 USE smart_tournament;
@@ -147,4 +147,32 @@ CREATE TABLE IF NOT EXISTS fixtures (
   FOREIGN KEY (team1_id) REFERENCES teams(id) ON DELETE CASCADE,
   FOREIGN KEY (team2_id) REFERENCES teams(id) ON DELETE SET NULL,
   FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE SET NULL
+);
+
+
+-- Table: fixture_bracket_links (Sprint 4 knockout advancement)
+-- Links each next-round fixture to the two feeder fixtures that produced it.
+CREATE TABLE IF NOT EXISTS fixture_bracket_links (
+  target_fixture_id INT NOT NULL PRIMARY KEY,
+  source_fixture1_id INT NOT NULL,
+  source_fixture2_id INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (target_fixture_id) REFERENCES fixtures(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_fixture1_id) REFERENCES fixtures(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_fixture2_id) REFERENCES fixtures(id) ON DELETE CASCADE
+);
+
+
+-- Table: match_results (Sprint 4)
+CREATE TABLE IF NOT EXISTS match_results (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  fixture_id INT NOT NULL UNIQUE,
+  team1_score DECIMAL(10,2) NOT NULL,
+  team2_score DECIMAL(10,2) NOT NULL,
+  outcome ENUM('TEAM1_WIN','TEAM2_WIN','DRAW') NOT NULL,
+  recorded_by INT DEFAULT NULL,
+  recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (fixture_id) REFERENCES fixtures(id) ON DELETE CASCADE,
+  FOREIGN KEY (recorded_by) REFERENCES users(id) ON DELETE SET NULL
 );
